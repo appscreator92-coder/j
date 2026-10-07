@@ -5,109 +5,76 @@ import sys
 
 
 # ============================================================
-# Convert Base64URL to Hex
+# CONFIGURATION
 # ============================================================
+
+SOURCE_URL = (
+    "https://raw.githubusercontent.com/"
+    "appscreator92-coder/index/refs/heads/main/jnew5.json"
+)
+
+# Original token
+TOKEN = "RiYlIZ"
+
+
+# ============================================================
+# BASE64URL -> HEX
+# ============================================================
+
 def base64url_to_hex(value):
+    """
+    Convert Base64URL string to hexadecimal.
+
+    Example:
+        QAExmUtEXYyIFyAiSHYP2g
+        ->
+        400131994b445d8c8817202248760fda
+    """
+
     if not value:
         return ""
 
-    value = str(value).strip()
-
-    # Base64URL -> standard Base64
-    value = value.replace("-", "+").replace("_", "/")
-
-    while len(value) % 4:
-        value += "="
-
     try:
-        binary = base64.b64decode(value)
-        return binary.hex()
-    except Exception:
+        value = str(value).strip()
+
+        # Convert Base64URL characters to normal Base64
+        value = value.replace("-", "+")
+        value = value.replace("_", "/")
+
+        # Add Base64 padding
+        value += "=" * (-len(value) % 4)
+
+        decoded = base64.b64decode(value)
+
+        return decoded.hex()
+
+    except Exception as e:
+        print(f"    Base64 conversion error: {e}")
         return ""
 
 
 # ============================================================
-# Extract keys from API response
+# FETCH JSON
 # ============================================================
-def extract_keys(data):
 
-    keys = []
+def fetch_json(url, headers, timeout=20):
 
-    if not isinstance(data, dict):
-        return keys
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=timeout
+    )
 
-    # Main expected format:
-    #
-    # {
-    #   "base64": {
-    #       "keys": [
-    #           {"kid": "...", "k": "..."},
-    #           {"kid": "...", "k": "..."}
-    #       ]
-    #   }
-    # }
-    base64_data = data.get("base64")
+    response.raise_for_status()
 
-    if isinstance(base64_data, dict):
-        base64_keys = base64_data.get("keys")
-
-        if isinstance(base64_keys, list):
-            keys.extend(base64_keys)
-
-    # Also support direct:
-    #
-    # {
-    #   "keys": [...]
-    # }
-    direct_keys = data.get("keys")
-
-    if isinstance(direct_keys, list):
-        keys.extend(direct_keys)
-
-    # Remove duplicates
-    result = []
-    seen = set()
-
-    for key in keys:
-
-        if not isinstance(key, dict):
-            continue
-
-        kid = key.get("kid")
-        k = key.get("k")
-
-        if not kid or not k:
-            continue
-
-        unique = (str(kid), str(k))
-
-        if unique in seen:
-            continue
-
-        seen.add(unique)
-
-        result.append({
-            "kid": kid,
-            "k": k
-        })
-
-    return result
+    return response.json()
 
 
 # ============================================================
 # MAIN
 # ============================================================
+
 def main():
-
-    source_url = (
-        "https://raw.githubusercontent.com/"
-        "appscreator92-coder/index/refs/heads/main/jnew5.json"
-    )
-
-    # ========================================================
-    # ORIGINAL TOKEN
-    # ========================================================
-    token = "RiYlIZ..."
 
     headers = {
         "User-Agent": (
@@ -121,196 +88,457 @@ def main():
         "Referer": "https://game.playindia.fun/"
     }
 
+
     # ========================================================
-    # FETCH SOURCE JSON
+    # FETCH jnew5.json
     # ========================================================
-    print("Fetching source JSON...")
+
+    print("=" * 70)
+    print("Fetching jnew5.json...")
+    print("=" * 70)
 
     try:
-        response = requests.get(
-            source_url,
-            headers=headers,
+
+        channels = fetch_json(
+            SOURCE_URL,
+            headers,
             timeout=30
         )
 
-        response.raise_for_status()
-
-        channels = response.json()
-
     except Exception as e:
-        print(f"Failed to fetch source file: {e}")
+
+        print(
+            f"ERROR: Failed to fetch jnew5.json: {e}"
+        )
+
         sys.exit(1)
+
 
     if not isinstance(channels, list):
-        print("ERROR: Source JSON is not an array.")
+
+        print(
+            "ERROR: jnew5.json does not contain a JSON array."
+        )
+
         sys.exit(1)
 
-    print(f"Total channels: {len(channels)}")
+
+    total_channels = len(channels)
+
+    print(
+        f"Total channels found: {total_channels}"
+    )
+
 
     output = []
 
-    total = len(channels)
 
     # ========================================================
-    # PROCESS CHANNELS
+    # PROCESS EACH CHANNEL
     # ========================================================
-    for index, channel in enumerate(channels, start=1):
 
-        # Keep original jnew5.json fields unchanged
-        item = channel.copy()
+    for index, channel in enumerate(
+        channels,
+        start=1
+    ):
+
+        print()
+        print("=" * 70)
 
         channel_id = str(
             channel.get("id", "")
         ).strip()
 
-        print("")
-        print("=" * 70)
+        channel_name = str(
+            channel.get("name", "")
+        )
+
         print(
-            f"[{index}/{total}] "
+            f"[{index}/{total_channels}] "
+            f"{channel_name}"
+        )
+
+        print(
             f"ID: {channel_id}"
         )
-        print(
-            f"Name: {channel.get('name', '')}"
-        )
+
+        print("=" * 70)
+
+
+        # ====================================================
+        # COPY ORIGINAL CHANNEL
+        #
+        # NOTHING from jnew5.json is modified.
+        # ====================================================
+
+        item = channel.copy()
+
+
+        # ====================================================
+        # NO ID
+        # ====================================================
 
         if not channel_id:
-            print("WARNING: Channel has no ID.")
+
+            print(
+                "WARNING: Channel has no ID."
+            )
+
             output.append(item)
+
             continue
 
+
         # ====================================================
-        # KEY API
+        # API URL
+        #
+        # Example:
+        #
+        # https://game.playindia.fun/Jtv/key.php?id=1108&token=RiYlIZ
         # ====================================================
+
         api_url = (
-            "https://warm-caverns-48629-92fab798385f.herokuapp.com/"
             "https://game.playindia.fun/Jtv/key.php"
-            f"?id={channel_id}&token={token}"
+            f"?id={channel_id}"
+            f"&token={TOKEN}"
         )
+
+
+        print(
+            "Fetching additional keys..."
+        )
+
+
+        # ====================================================
+        # CALL KEY API
+        # ====================================================
 
         try:
 
-            key_response = requests.get(
+            response = requests.get(
                 api_url,
                 headers=headers,
                 timeout=20
             )
 
             print(
-                f"Key API status: "
-                f"{key_response.status_code}"
+                f"API HTTP status: "
+                f"{response.status_code}"
             )
 
-            if key_response.status_code != 200:
+            response.raise_for_status()
 
-                print(
-                    f"WARNING: Key API failed "
-                    f"for ID {channel_id}"
-                )
 
-            else:
+        except requests.RequestException as e:
 
-                try:
-                    data = key_response.json()
+            print(
+                f"WARNING: API request failed: {e}"
+            )
 
-                except Exception as e:
+            # Keep original channel unchanged
+            output.append(item)
 
-                    print(
-                        f"WARNING: Invalid JSON response: {e}"
-                    )
+            continue
 
-                    print(
-                        key_response.text[:1000]
-                    )
 
-                    data = None
+        # ====================================================
+        # PARSE API JSON
+        # ====================================================
 
-                if data is not None:
+        try:
 
-                    # ----------------------------------------
-                    # Extract API keys
-                    # ----------------------------------------
-                    keys = extract_keys(data)
-
-                    print(
-                        f"API keys found: {len(keys)}"
-                    )
-
-                    # ----------------------------------------
-                    # Add additional keys starting from 2
-                    # ----------------------------------------
-                    for key_index, key_obj in enumerate(
-                        keys,
-                        start=2
-                    ):
-
-                        kid_hex = base64url_to_hex(
-                            key_obj["kid"]
-                        )
-
-                        key_hex = base64url_to_hex(
-                            key_obj["k"]
-                        )
-
-                        if not kid_hex or not key_hex:
-
-                            print(
-                                f"  key {key_index}: "
-                                f"conversion failed"
-                            )
-
-                            continue
-
-                        item[
-                            f"keyId{key_index}"
-                        ] = kid_hex
-
-                        item[
-                            f"key{key_index}"
-                        ] = key_hex
-
-                        print(
-                            f"  Added keyId{key_index}: "
-                            f"{kid_hex}"
-                        )
-
-                        print(
-                            f"  Added key{key_index}: "
-                            f"{key_hex}"
-                        )
+            data = response.json()
 
         except Exception as e:
 
             print(
-                f"WARNING: Error fetching keys "
-                f"for ID {channel_id}: {e}"
+                f"WARNING: API returned invalid JSON: {e}"
             )
 
+            output.append(item)
+
+            continue
+
+
+        # ====================================================
+        # GET:
+        #
+        # data["base64"]["keys"]
+        # ====================================================
+
+        base64_data = data.get(
+            "base64",
+            {}
+        )
+
+
+        if not isinstance(
+            base64_data,
+            dict
+        ):
+
+            print(
+                "WARNING: 'base64' is not an object."
+            )
+
+            output.append(item)
+
+            continue
+
+
+        keys = base64_data.get(
+            "keys",
+            []
+        )
+
+
+        if not isinstance(
+            keys,
+            list
+        ):
+
+            print(
+                "WARNING: 'base64.keys' is not a list."
+            )
+
+            output.append(item)
+
+            continue
+
+
+        print(
+            f"API returned {len(keys)} key(s)."
+        )
+
+
+        # ====================================================
+        # ADD API KEYS
+        #
+        # API KEY #1 -> keyId2 / key2
+        # API KEY #2 -> keyId3 / key3
+        # API KEY #3 -> keyId4 / key4
+        #
+        # Existing keyId/key and keyId1/key1 are untouched.
+        # ====================================================
+
+        added_count = 0
+
+
+        for api_key_number, key_object in enumerate(
+            keys,
+            start=2
+        ):
+
+
+            if not isinstance(
+                key_object,
+                dict
+            ):
+
+                print(
+                    f"  API key #{api_key_number}: "
+                    f"invalid object"
+                )
+
+                continue
+
+
+            # ------------------------------------------------
+            # API:
+            #
+            # kid = Key ID
+            # k   = Key
+            # ------------------------------------------------
+
+            kid = key_object.get(
+                "kid",
+                ""
+            )
+
+            key = key_object.get(
+                "k",
+                ""
+            )
+
+
+            if not kid:
+
+                print(
+                    f"  API key #{api_key_number}: "
+                    f"missing kid"
+                )
+
+                continue
+
+
+            if not key:
+
+                print(
+                    f"  API key #{api_key_number}: "
+                    f"missing k"
+                )
+
+                continue
+
+
+            # ------------------------------------------------
+            # Convert Base64URL -> HEX
+            # ------------------------------------------------
+
+            key_id_hex = base64url_to_hex(
+                kid
+            )
+
+            key_hex = base64url_to_hex(
+                key
+            )
+
+
+            if not key_id_hex:
+
+                print(
+                    f"  API key #{api_key_number}: "
+                    f"kid conversion failed"
+                )
+
+                continue
+
+
+            if not key_hex:
+
+                print(
+                    f"  API key #{api_key_number}: "
+                    f"k conversion failed"
+                )
+
+                continue
+
+
+            # ------------------------------------------------
+            # IMPORTANT
+            #
+            # API key #1 -> keyId2/key2
+            # API key #2 -> keyId3/key3
+            # etc.
+            # ------------------------------------------------
+
+            key_id_field = (
+                f"keyId{api_key_number}"
+            )
+
+            key_field = (
+                f"key{api_key_number}"
+            )
+
+
+            # ------------------------------------------------
+            # ADD ONLY
+            #
+            # Existing fields are NOT modified.
+            # ------------------------------------------------
+
+            item[key_id_field] = key_id_hex
+
+            item[key_field] = key_hex
+
+
+            added_count += 1
+
+
+            print(
+                f"  Added {key_id_field}: "
+                f"{key_id_hex}"
+            )
+
+            print(
+                f"  Added {key_field}: "
+                f"{key_hex}"
+            )
+
+
+        # ====================================================
+        # RESULT FOR CHANNEL
+        # ====================================================
+
+        if added_count:
+
+            print(
+                f"Successfully added "
+                f"{added_count} additional key(s)."
+            )
+
+        else:
+
+            print(
+                "No additional keys were added."
+            )
+
+
+        # ====================================================
+        # ADD CHANNEL TO OUTPUT
+        # ====================================================
+
         output.append(item)
+
 
     # ========================================================
     # SAVE new.json
     # ========================================================
-    with open(
-        "new.json",
-        "w",
-        encoding="utf-8"
-    ) as f:
 
-        json.dump(
-            output,
-            f,
-            indent=2,
-            ensure_ascii=False
+    print()
+    print("=" * 70)
+    print("Writing new.json...")
+    print("=" * 70)
+
+
+    try:
+
+        with open(
+            "new.json",
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                output,
+                f,
+                indent=2,
+                ensure_ascii=False
+            )
+
+
+    except Exception as e:
+
+        print(
+            f"ERROR: Failed to write new.json: {e}"
         )
 
-    print("")
+        sys.exit(1)
+
+
+    # ========================================================
+    # DONE
+    # ========================================================
+
+    print()
     print("=" * 70)
-    print("Successfully generated new.json!")
+    print("SUCCESS")
+    print("=" * 70)
+
     print(
         f"Channels processed: {len(output)}"
     )
+
+    print(
+        "Output file: new.json"
+    )
+
     print("=" * 70)
 
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     main()
