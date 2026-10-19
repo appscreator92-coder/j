@@ -12,7 +12,7 @@ SOURCE_URL = (
     "appscreator92-coder/index/refs/heads/main/jnew5.json"
 )
 
-SPORTLINK_URL = "https://sportlink-tv10.pages.dev/jtvplus.json"
+SPORTLINK_URL = "https://sportlink-tv10.pages.dev/jtv2.json"
 
 
 # ============================================================
