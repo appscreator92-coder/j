@@ -1,6 +1,12 @@
+
 import json
 import requests
 import sys
+import re
+import time
+import hashlib
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 
 # ============================================================
@@ -8,20 +14,307 @@ import sys
 # ============================================================
 
 SOURCE_URL = (
-    "https://raw.githubusercontent.com/appscreator92-coder/index/refs/heads/main/jnew5.json"
+    "https://raw.githubusercontent.com/appscreator92-coder/"
+    "index/refs/heads/main/jnew5.json"
 )
 
 SPORTLINK_URL = "https://sportlink-tv10.pages.dev/jtvplus3.json"
 
+OUTPUT_FILE = "new1.json"
+
+TIMEOUT = 30
+
 
 # ============================================================
-# FETCH JSON
+# HTTP SESSION - FRESH DATA
 # ============================================================
 
-def fetch_json(url, headers, timeout=20):
-    response = requests.get(url, headers=headers, timeout=timeout)
+def create_session():
+    session = requests.Session()
+
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Cache-Control": "no-cache, no-store, max-age=0",
+        "Pragma": "no-cache",
+    })
+
+    return session
+
+
+def fetch_json(session, url, label):
+
+    # Add a unique query parameter to reduce CDN caching.
+    parts = urlsplit(url)
+    params = parse_qsl(parts.query, keep_blank_values=True)
+    params.append(("_refresh", str(time.time_ns())))
+
+    fresh_url = urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        parts.path,
+        urlencode(params),
+        parts.fragment
+    ))
+
+    print(f"\nFetching {label}...")
+
+    response = session.get(
+        fresh_url,
+        timeout=TIMEOUT
+    )
+
     response.raise_for_status()
-    return response.json()
+
+    data = response.json()
+
+    print(f"HTTP Status: {response.status_code}")
+    print(f"Downloaded: {len(response.content):,} bytes")
+
+    return data
+
+
+# ============================================================
+# NORMALIZE ID AND NAME
+# ============================================================
+
+def normalize_id(value):
+
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def normalize_name(value):
+
+    if value is None:
+        return ""
+
+    value = str(value).lower().strip()
+
+    # Remove spaces and punctuation for flexible matching.
+    return re.sub(r"[^a-z0-9]", "", value)
+
+
+# ============================================================
+# EXTRACT CHANNEL ARRAYS
+# ============================================================
+
+def get_sportlink_channels(data):
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+
+        channels = data.get("channels")
+
+        if isinstance(channels, list):
+            return channels
+
+        # Support alternative nested structures.
+        for key in ("data", "results"):
+
+            nested = data.get(key)
+
+            if isinstance(nested, list):
+                return nested
+
+            if isinstance(nested, dict):
+                channels = nested.get("channels")
+
+                if isinstance(channels, list):
+                    return channels
+
+    raise ValueError(
+        "Unable to locate Sportlink channels array."
+    )
+
+
+# ============================================================
+# EXTRACT SPORTLINK KEY PAIRS
+# ============================================================
+
+def extract_key_pairs(channel):
+
+    raw_keys = channel.get("sportlink", [])
+
+    if isinstance(raw_keys, str):
+        raw_keys = [raw_keys]
+
+    if not isinstance(raw_keys, list):
+        return []
+
+    valid_pairs = []
+
+    for entry in raw_keys:
+
+        kid = ""
+        key = ""
+
+        # Format: kid:key
+        if isinstance(entry, str) and ":" in entry:
+
+            kid, key = entry.split(":", 1)
+
+        # Alternative dictionary format.
+        elif isinstance(entry, dict):
+
+            kid = (
+                entry.get("keyId")
+                or entry.get("key_id")
+                or entry.get("kid")
+                or ""
+            )
+
+            key = (
+                entry.get("key")
+                or entry.get("value")
+                or ""
+            )
+
+        kid = str(kid).strip()
+        key = str(key).strip()
+
+        # Validate 32-character hexadecimal DRM values.
+        if (
+            re.fullmatch(r"[0-9a-fA-F]{32}", kid)
+            and re.fullmatch(r"[0-9a-fA-F]{32}", key)
+        ):
+
+            pair = (kid.lower(), key.lower())
+
+            if pair not in valid_pairs:
+                valid_pairs.append(pair)
+
+    return valid_pairs
+
+
+# ============================================================
+# BUILD SPORTLINK LOOKUP
+# ============================================================
+
+def build_lookup(channels):
+
+    id_lookup = {}
+    name_lookup = {}
+
+    for channel in channels:
+
+        if not isinstance(channel, dict):
+            continue
+
+        channel_id = normalize_id(channel.get("id"))
+        channel_name = normalize_name(channel.get("name"))
+
+        if channel_id:
+
+            id_lookup.setdefault(channel_id, []).append(channel)
+
+        if channel_name:
+
+            name_lookup.setdefault(channel_name, []).append(channel)
+
+    return id_lookup, name_lookup
+
+
+# ============================================================
+# MATCH CHANNEL
+# ============================================================
+
+def find_matching_channel(
+    channel,
+    id_lookup,
+    name_lookup
+):
+
+    channel_id = normalize_id(channel.get("id"))
+    channel_name = normalize_name(channel.get("name"))
+
+    # First priority: exact channel ID.
+    if channel_id and channel_id in id_lookup:
+
+        candidates = id_lookup[channel_id]
+
+        if len(candidates) == 1:
+            return candidates[0], "ID"
+
+        # If duplicate IDs exist, prefer matching name.
+        for candidate in candidates:
+
+            if (
+                normalize_name(candidate.get("name"))
+                == channel_name
+            ):
+                return candidate, "ID + NAME"
+
+    # Second priority: unique normalized name.
+    if channel_name and channel_name in name_lookup:
+
+        candidates = name_lookup[channel_name]
+
+        if len(candidates) == 1:
+            return candidates[0], "NAME"
+
+    return None, None
+
+
+# ============================================================
+# UPDATE ADDITIONAL KEYS
+# ============================================================
+
+def update_channel_keys(item, sportlink_channel):
+
+    pairs = extract_key_pairs(sportlink_channel)
+
+    if not pairs:
+        return 0, False
+
+    # Remove obsolete additional keys.
+    # Keep original primary keys and keyId1/key1.
+    for field in list(item.keys()):
+
+        if re.fullmatch(r"keyId\d+", field):
+
+            if int(field[5:]) >= 2:
+                del item[field]
+
+        elif re.fullmatch(r"key\d+", field):
+
+            if int(field[3:]) >= 2:
+                del item[field]
+
+    added = 0
+
+    # First valid Sportlink pair becomes keyId2/key2.
+    for index, (kid, key) in enumerate(pairs, start=2):
+
+        item[f"keyId{index}"] = kid
+        item[f"key{index}"] = key
+
+        added += 1
+
+    return added, True
+
+
+# ============================================================
+# FILE HASH
+# ============================================================
+
+def file_hash(data):
+
+    encoded = json.dumps(
+        data,
+        ensure_ascii=False,
+        sort_keys=True
+    ).encode("utf-8")
+
+    return hashlib.sha256(encoded).hexdigest()
 
 
 # ============================================================
@@ -29,135 +322,250 @@ def fetch_json(url, headers, timeout=20):
 # ============================================================
 
 def main():
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/115.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json, text/plain, */*",
-    }
 
     print("=" * 70)
-    print("Fetching jnew5.json and sportlink data...")
+    print("SPORTLINK CHANNEL & DRM KEY UPDATER")
     print("=" * 70)
 
-    try:
-        jnew5_data = fetch_json(SOURCE_URL, headers, timeout=30)
-    except Exception as e:
-        print(f"ERROR: Failed to fetch jnew5.json: {e}")
-        sys.exit(1)
+    session = create_session()
+
+    # --------------------------------------------------------
+    # FETCH SOURCE JSON
+    # --------------------------------------------------------
 
     try:
-        sportlink_response = fetch_json(SPORTLINK_URL, headers, timeout=30)
-        # Handle if channels are nested under a "channels" key
-        if isinstance(sportlink_response, dict):
-            sportlink_channels = sportlink_response.get("channels", [])
-        elif isinstance(sportlink_response, list):
-            sportlink_channels = sportlink_response
-        else:
-            sportlink_channels = []
-    except Exception as e:
-        print(f"ERROR: Failed to fetch sportlink data: {e}")
+
+        source_data = fetch_json(
+            session,
+            SOURCE_URL,
+            "jnew5.json"
+        )
+
+        sportlink_data = fetch_json(
+            session,
+            SPORTLINK_URL,
+            "jtvplus3.json"
+        )
+
+    except Exception as error:
+
+        print("\nERROR: Data download failed.")
+        print(error)
         sys.exit(1)
 
-    if not isinstance(jnew5_data, list):
-        print("ERROR: jnew5.json does not contain a JSON array.")
+    # --------------------------------------------------------
+    # VALIDATE JSON
+    # --------------------------------------------------------
+
+    if not isinstance(source_data, list):
+
+        print("ERROR: jnew5.json must contain a JSON array.")
         sys.exit(1)
 
-    # Build a lookup map from sportlink channels using ID and Name
-    # Key: (str(id), str(name).strip()) -> list of sportlink entries
-    sportlink_map = {}
-    for sch in sportlink_channels:
-        s_id = str(sch.get("id", "")).strip()
-        s_name = str(sch.get("name", "")).strip()
-        if s_id and s_name:
-            sportlink_map[(s_id, s_name)] = sch.get("sportlink", [])
+    try:
 
-    total_channels = len(jnew5_data)
-    print(f"Total channels found in jnew5.json: {total_channels}")
+        sportlink_channels = get_sportlink_channels(
+            sportlink_data
+        )
+
+    except Exception as error:
+
+        print("ERROR:", error)
+        sys.exit(1)
+
+    if not sportlink_channels:
+
+        print("ERROR: Sportlink channel list is empty.")
+        sys.exit(1)
+
+    print("\n" + "=" * 70)
+    print("SOURCE INFORMATION")
+    print("=" * 70)
+
+    print("Source channels:", len(source_data))
+    print("Sportlink channels:", len(sportlink_channels))
+
+    if isinstance(sportlink_data, dict):
+        print(
+            "Sportlink last updated:",
+            sportlink_data.get("last_updated", "Not available")
+        )
+
+    # --------------------------------------------------------
+    # BUILD LOOKUP
+    # --------------------------------------------------------
+
+    id_lookup, name_lookup = build_lookup(
+        sportlink_channels
+    )
+
+    # --------------------------------------------------------
+    # PROCESS CHANNELS
+    # --------------------------------------------------------
 
     output = []
 
-    for index, channel in enumerate(jnew5_data, start=1):
-        print()
-        print("=" * 70)
+    matched_channels = 0
+    unmatched_channels = 0
+    updated_channels = 0
+    total_keys = 0
 
-        channel_id = str(channel.get("id", "")).strip()
-        channel_name = str(channel.get("name", "")).strip()
+    for position, channel in enumerate(
+        source_data,
+        start=1
+    ):
 
-        print(f"[{index}/{total_channels}] {channel_name} (ID: {channel_id})")
-        print("=" * 70)
+        if not isinstance(channel, dict):
+
+            output.append(channel)
+            continue
 
         item = channel.copy()
 
-        if not channel_id or not channel_name:
-            print("WARNING: Channel missing ID or Name. Keeping original.")
+        channel_name = channel.get("name", "Unknown")
+        channel_id = normalize_id(channel.get("id"))
+
+        print("\n" + "-" * 60)
+        print(
+            f"[{position}/{len(source_data)}] "
+            f"{channel_name} | ID: {channel_id}"
+        )
+
+        matched, match_type = find_matching_channel(
+            channel,
+            id_lookup,
+            name_lookup
+        )
+
+        if not matched:
+
+            print("NO MATCH FOUND - Original retained.")
+
+            unmatched_channels += 1
             output.append(item)
             continue
 
-        # Look up matching sportlink entry using both ID and Name
-        lookup_key = (channel_id, channel_name)
-        sportlink_keys = sportlink_map.get(lookup_key, [])
+        matched_channels += 1
 
-        if not sportlink_keys:
-            print("No matching sportlink keys found for this ID & Name combo.")
-            output.append(item)
-            continue
+        print(
+            f"MATCH FOUND using {match_type}: "
+            f"{matched.get('name')} ({matched.get('id')})"
+        )
 
-        print(f"Found {len(sportlink_keys)} sportlink key(s).")
+        key_count, changed = update_channel_keys(
+            item,
+            matched
+        )
 
-        added_count = 0
-        # Map starting from index 2 -> keyId2 / key2
-        for key_idx, key_pair in enumerate(sportlink_keys, start=2):
-            if not isinstance(key_pair, str) or ":" not in key_pair:
-                continue
+        if changed:
 
-            kid_hex, k_hex = key_pair.split(":", 1)
-            kid_hex = kid_hex.strip()
-            k_hex = k_hex.strip()
+            total_keys += key_count
+            updated_channels += 1
 
-            if not kid_hex or not k_hex:
-                continue
+            print(f"Updated additional keys: {key_count}")
 
-            key_id_field = f"keyId{key_idx}"
-            key_field = f"key{key_idx}"
+            for index in range(2, key_count + 2):
 
-            item[key_id_field] = kid_hex
-            item[key_field] = k_hex
-            added_count += 1
+                print(
+                    f"  keyId{index}: "
+                    f"{item[f'keyId{index}']}"
+                )
 
-            print(f"  Added {key_id_field}: {kid_hex}")
-            print(f"  Added {key_field}: {k_hex}")
-
-        if added_count:
-            print(f"Successfully added {added_count} additional key pair(s).")
         else:
-            print("No valid key pairs could be parsed.")
+
+            print("No valid Sportlink keys found.")
 
         output.append(item)
 
-    # ========================================================
-    # SAVE new.json
-    # ========================================================
-    print()
-    print("=" * 70)
-    print("Writing new1.json...")
+    # --------------------------------------------------------
+    # FINAL DIAGNOSTICS
+    # --------------------------------------------------------
+
+    print("\n" + "=" * 70)
+    print("FINAL RESULTS")
     print("=" * 70)
 
-    try:
-        with open("new1.json", "w", encoding="utf-8") as f:
-            json.dump(output, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"ERROR: Failed to write new1.json: {e}")
+    print("Source channels:", len(source_data))
+    print("Sportlink channels:", len(sportlink_channels))
+    print("Matched channels:", matched_channels)
+    print("Unmatched channels:", unmatched_channels)
+    print("Channels with valid keys:", updated_channels)
+    print("Total additional key pairs:", total_keys)
+
+    # --------------------------------------------------------
+    # SAFETY CHECK
+    # --------------------------------------------------------
+
+    if matched_channels == 0:
+
+        print("\nERROR: No channels matched.")
+        print("Existing output file will not be overwritten.")
         sys.exit(1)
 
-    print()
+    if total_keys == 0:
+
+        print("\nERROR: No valid DRM key pairs extracted.")
+        print("Existing output file will not be overwritten.")
+        sys.exit(1)
+
+    # --------------------------------------------------------
+    # SAVE JSON
+    # --------------------------------------------------------
+
+    output_path = Path(OUTPUT_FILE)
+
+    old_hash = None
+
+    if output_path.exists():
+
+        try:
+
+            with open(
+                output_path,
+                "r",
+                encoding="utf-8"
+            ) as file:
+
+                old_data = json.load(file)
+
+            old_hash = file_hash(old_data)
+
+        except Exception:
+            old_hash = None
+
+    new_hash = file_hash(output)
+
+    print("\n" + "=" * 70)
+    print("SAVING OUTPUT")
     print("=" * 70)
-    print("SUCCESS")
-    print("=" * 70)
-    print(f"Channels processed: {len(output)}")
-    print("Output file: new1.json")
+
+    if old_hash == new_hash:
+
+        print("JSON content is identical to existing output.")
+
+    else:
+
+        temporary_path = output_path.with_suffix(".tmp")
+
+        with open(
+            temporary_path,
+            "w",
+            encoding="utf-8"
+        ) as file:
+
+            json.dump(
+                output,
+                file,
+                indent=2,
+                ensure_ascii=False
+            )
+
+        temporary_path.replace(output_path)
+
+        print("SUCCESS: new1.json updated.")
+
+    print("Output file:", output_path.resolve())
+    print("SHA256:", new_hash)
     print("=" * 70)
 
 
