@@ -28,10 +28,18 @@ jobs:
         run: |
           python scriptnew.py
 
+     
       - name: Commit and Push new1.json if changed
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add new1.json
-          git diff --staging --quiet || git commit -m "Auto-update new1.json keys [skip ci]"
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No changes detected. Skipping commit."
+          else
+            git commit -m "Auto-update new1.json"
+            git push origin HEAD:main
+          fi
+
