@@ -8,8 +8,7 @@ import sys
 # ============================================================
 
 SOURCE_URL = (
-    "https://raw.githubusercontent.com/"
-    "appscreator92-coder/index/refs/heads/main/jnew5.json"
+    "https://raw.githubusercontent.com/appscreator92-coder/index/refs/heads/main/jnew5.json"
 )
 
 SPORTLINK_URL = "https://sportlink-tv10.pages.dev/jtvplus3.json"
